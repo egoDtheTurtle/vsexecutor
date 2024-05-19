@@ -6,8 +6,7 @@
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/egoDtheTurtle/vsexecutor/main/lua_backend.lua"))()
 ```
-
-  - If you want to update the extension, just uninstall the current one by right-clicking it in the Extensions section and pressing "Uninstall". Close and reopen VSCode, then follow the Installation steps again.
+- If you want to update the extension, just uninstall the current one by right-clicking it in the Extensions section and pressing "Uninstall". Close and reopen VSCode, then follow the Installation steps again.
 
 
 ## Usage
