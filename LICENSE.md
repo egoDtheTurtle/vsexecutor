@@ -1,0 +1,1 @@
+Shout out to my boy ChatGPT 4! (Didn't buy it but got a free trial for a couple of hours, hehe)
