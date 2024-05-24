@@ -1,8 +1,7 @@
 -- Could've code better in lua, don't give a shit, if it work, it worked
-
 repeat wait() until game:IsLoaded()
 
-local host = game.Players.LocalPlayer.PlayerGui:FindFirstChild('TouchGui') and "10.0.2.2" or "localhost"
+local host = getgenv().EthernetIPv4 or game.Players.LocalPlayer.PlayerGui:FindFirstChild('TouchGui') and "10.0.2.2" or "localhost"
 local serverUrl = "http://" .. host .. ":1306/received_script.lua"
 
 local function fetchScript()
@@ -55,7 +54,6 @@ local function checkAndClearServer()
     until false
 end
 
--- Call the function to check and clear the server
 if checkAndClearServer() then
     print("[VSExecutor]: Server connected and ready to execute script.")
 else

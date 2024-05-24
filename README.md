@@ -21,4 +21,10 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/egoDtheTurtle/vsexecu
 After completing these steps, try again.
 
 - **Script not executing in-game after pressing "Execute" button:**
-This might be because the executor does not support localhost connection. Try using a different executor.
+1. Add this line at the top of the loadstring script (inside the autoexec folder):
+```lua
+getgenv().EthernetIPv4 = "Your Ethernet IPv4"
+```
+2. To find your Ethernet IPv4, install and run [EthernetIPv4.exe](https://github.com/egoDtheTurtle/vsexecutor/releases).
+
+- If the above method doesn't work, it might be because the executor/emulator does not support localhost connection. Try using a different executor/emulator.
