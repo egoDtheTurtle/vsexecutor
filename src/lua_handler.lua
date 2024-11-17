@@ -15,6 +15,13 @@ local function connectWebSocket()
 
     getgenv().web.OnMessage:Connect(function(msg)
         if msg ~= "Client connected" and msg ~= "Client disconnected" then
+            if getgenv().web then
+                local messageType2 = tostring(messageType)
+                getgenv().web:Send(HttpService:JSONEncode({
+                    ["Tag"] = "Websocket",
+                    ["Message"] = "Script executed"
+                }))
+            end
             local s, e = pcall(loadstring(msg))
             if e then
                 warn(e)
