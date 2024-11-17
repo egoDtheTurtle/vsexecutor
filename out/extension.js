@@ -88,7 +88,13 @@ function activate(context) {
             try {
                 const parsedData = JSON.parse(message);
                 logtag = parsedData.Tag || "Output";
-                logmessage = parsedData.Message.toString() !== "[object Object]" && Object.values(parsedData.Message).join(', ') || Object.keys(parsedData.Message).length !== 0 && JSON.stringify(parsedData.Message) || parsedData.Message || "No message content";
+                let templogmessage = JSON.stringify(parsedData.Message);
+                if (templogmessage.startsWith('[') && templogmessage.endsWith(']')) {
+                    templogmessage = templogmessage.slice(1, -1);
+                    templogmessage = templogmessage.replace(/(?<!\\)"/g, '');
+                    templogmessage = templogmessage.replace(/\\"/g, '"');
+                }
+                logmessage = templogmessage;
             }
             catch (err) {
                 logtag = "WebSocket";
@@ -107,18 +113,25 @@ function activate(context) {
         });
         let disposable = vscode.commands.registerCommand('extension.executeFile', () => {
             const activeEditor = vscode.window.activeTextEditor;
-            if (activeEditor) {
-                const text = activeEditor.document.getText();
-                // Check if WebSocket is open
-                if (ws.readyState === ws_1.default.OPEN) {
-                    // Send the text to the WebSocket server
-                    ws.send(text);
-                    // Show success message
-                    vscode.window.showInformationMessage('File sent successfully to the WebSocket server.');
+            if (activeEditor && activeEditor.document.languageId !== 'Log') {
+                const text = activeEditor.document.getText().trim(); // Trim whitespace from the text
+                // Check if text has content
+                if (text) {
+                    // Check if WebSocket is open
+                    if (ws.readyState === ws_1.default.OPEN) {
+                        // Send the text to the WebSocket server
+                        ws.send(text);
+                        // Show success message
+                        vscode.window.showInformationMessage('File sent successfully to the WebSocket server.');
+                    }
+                    else {
+                        // Show error message if WebSocket is not open
+                        vscode.window.showInformationMessage('WebSocket connection is not open. Please check the connection.');
+                    }
                 }
                 else {
-                    // Show error message if WebSocket is not open
-                    vscode.window.showInformationMessage('WebSocket connection is not open. Please check the connection.');
+                    // Show error message if text is empty
+                    vscode.window.showInformationMessage('The file is empty. Nothing to send.');
                 }
             }
             else {
