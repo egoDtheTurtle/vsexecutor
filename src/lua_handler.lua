@@ -2,7 +2,7 @@ if not game:IsLoaded() then
     game.Loaded:Wait()
 end
 
-local HttpService = game:GetService("HttpService")
+local HttpService = game.HttpService -- Not using GetService and using HttpService.JSONEncode(HttpService, ...) to call to prevent issue with getrawmetatable
 local ws = WebSocket and WebSocket.connect or websocket and websocket.connect
 
 local host = getgenv().EthernetIPv4 or game.Players.LocalPlayer.PlayerGui:FindFirstChild('TouchGui') and "10.0.2.2" or "localhost"
@@ -18,7 +18,7 @@ local function connectWebSocket()
         if msg ~= "Client connected" and msg ~= "Client disconnected" then
             if getgenv().web then
                 local messageType2 = tostring(messageType)
-                getgenv().web:Send(HttpService:JSONEncode({
+                getgenv().web:Send(HttpService.JSONEncode(HttpService, {
                     ["Tag"] = "Websocket",
                     ["Message"] = "Script executed"
                 }))
@@ -39,7 +39,7 @@ if getgenv().LogGameOutput then
     game:GetService("LogService").MessageOut:Connect(function(message, messageType)
         if getgenv().web then
             local messageType2 = tostring(messageType)
-            getgenv().web:Send(HttpService:JSONEncode({
+            getgenv().web:Send(HttpService.JSONEncode(HttpService, {
                 ["Tag"] = messageType2:gsub("Enum.MessageType.Message", ""),
                 ["Message"] = tostring(message)
             }))
@@ -50,7 +50,7 @@ else
     getgenv().print = function(...)
         local args = {...}
         if getgenv().web then
-            getgenv().web:Send(HttpService:JSONEncode({
+            getgenv().web:Send(HttpService.JSONEncode(HttpService, {
                 ["Tag"] = "Output",
                 ["Message"] = args
             }))
@@ -62,7 +62,7 @@ else
     getgenv().warn = function(...)
         local args = {...}
         if getgenv().web then
-            getgenv().web:Send(HttpService:JSONEncode({
+            getgenv().web:Send(HttpService.JSONEncode(HttpService, {
                 ["Tag"] = "Warning",
                 ["Message"] = args
             }))
@@ -74,7 +74,7 @@ else
     getgenv().error = function(...)
         local args = {...}
         if getgenv().web then
-            getgenv().web:Send(HttpService:JSONEncode({
+            getgenv().web:Send(HttpService.JSONEncode(HttpService, {
                 ["Tag"] = "Error",
                 ["Message"] = args
             }))
