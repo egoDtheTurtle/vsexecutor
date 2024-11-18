@@ -2,6 +2,7 @@ if not game:IsLoaded() then
     game.Loaded:Wait()
 end
 
+local HttpService = game:GetService("HttpService")
 local ws = WebSocket and WebSocket.connect or websocket and websocket.connect
 
 local host = getgenv().EthernetIPv4 or game.Players.LocalPlayer.PlayerGui:FindFirstChild('TouchGui') and "10.0.2.2" or "localhost"
@@ -34,7 +35,6 @@ local function connectWebSocket()
 end
 connectWebSocket()
 
-local HttpService = game:GetService("HttpService")
 if getgenv().LogGameOutput then
     game:GetService("LogService").MessageOut:Connect(function(message, messageType)
         if getgenv().web then
