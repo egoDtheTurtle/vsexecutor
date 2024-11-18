@@ -32,3 +32,7 @@ getgenv().EthernetIPv4 = "Your Ethernet IPv4"
 2. To find your Ethernet IPv4, install and run [EthernetIPv4.exe](https://github.com/egoDtheTurtle/vsexecutor/releases).
 
 - If the above method doesn't work, it might be because the executor/emulator does not support localhost connection. Try using a different executor/emulator.
+
+
+## If the new version (WebSocket-based) isn't working for you  
+Use the old loadstring-raw based version instead. Download the [Legacy](https://github.com/egoDtheTurtle/vsexecutor/releases/tag/v0.0.2) version.
