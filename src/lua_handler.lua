@@ -18,7 +18,7 @@ local function connectWebSocket()
         if msg ~= "Client connected" and msg ~= "Client disconnected" then
             if getgenv().web then
                 local messageType2 = tostring(messageType)
-                getgenv().web:Send(HttpService.JSONEncode(HttpService, {
+                getgenv().web:Send(HttpService:JSONEncode({
                     ["Tag"] = "Websocket",
                     ["Message"] = "Script executed"
                 }))
@@ -39,18 +39,19 @@ if getgenv().LogGameOutput then
     game:GetService("LogService").MessageOut:Connect(function(message, messageType)
         if getgenv().web then
             local messageType2 = tostring(messageType)
-            getgenv().web:Send(HttpService.JSONEncode(HttpService, {
+            getgenv().web.Send(HttpService:JSONEncode({
                 ["Tag"] = messageType2:gsub("Enum.MessageType.Message", ""),
                 ["Message"] = tostring(message)
             }))
         end
     end)
 else
+    -- Not using ":" to prevent getmetatable issues
     local oldprint = print
     getgenv().print = function(...)
         local args = {...}
         if getgenv().web then
-            getgenv().web:Send(HttpService.JSONEncode(HttpService, {
+            getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
                 ["Tag"] = "Output",
                 ["Message"] = args
             }))
@@ -62,7 +63,7 @@ else
     getgenv().warn = function(...)
         local args = {...}
         if getgenv().web then
-            getgenv().web:Send(HttpService.JSONEncode(HttpService, {
+            getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
                 ["Tag"] = "Warning",
                 ["Message"] = args
             }))
