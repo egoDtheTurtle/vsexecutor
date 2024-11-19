@@ -12,6 +12,7 @@ local function connectWebSocket()
     getgenv().web = nil
     repeat wait() until pcall(function()
         getgenv().web = ws(wsUrl)
+        if not getgenv().web then wait(2) end
     end) == true
 
     getgenv().web.OnMessage:Connect(function(msg)
@@ -39,7 +40,7 @@ if getgenv().LogGameOutput then
     game:GetService("LogService").MessageOut:Connect(function(message, messageType)
         if getgenv().web then
             local messageType2 = tostring(messageType)
-            getgenv().web.Send(HttpService:JSONEncode({
+            getgenv().web:Send(HttpService:JSONEncode({
                 ["Tag"] = messageType2:gsub("Enum.MessageType.Message", ""),
                 ["Message"] = tostring(message)
             }))
@@ -75,7 +76,7 @@ else
     getgenv().error = function(...)
         local args = {...}
         if getgenv().web then
-            getgenv().web:Send(HttpService.JSONEncode(HttpService, {
+            getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
                 ["Tag"] = "Error",
                 ["Message"] = args
             }))
