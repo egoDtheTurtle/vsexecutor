@@ -24,12 +24,22 @@ local function connectWebSocket()
                     ["Message"] = "Script executed"
                 }))
             end
-            local s, e = pcall(loadstring(msg))
-            if e then
-                warn(e)
+            
+            local success, result = pcall(function()
+                task.spawn(function() -- method prevent "attempt to yield across metamethod/C-call boundary" for some executor
+                    local s, e = pcall(loadstring(msg))
+                    if not s then
+                        warn(e)
+                    end
+                end)
+            end)
+    
+            if not success then
+                warn(result)
             end
         end
     end)
+    
     getgenv().web.OnClose:Connect(function()
         connectWebSocket()
     end)
