@@ -234,7 +234,7 @@ function startWebSocketServer(): Promise<void> {
         console.log('Starting server with path:', serverPath); // Debugging the path
 
         // Spawn the WebSocket server in the background
-        const startServerCommand = spawn('node', [serverPath]);
+        const startServerCommand = spawn(process.execPath, [serverPath]);
 
         // Capture stdout and stderr to log them
         startServerCommand.stdout.on('data', (data) => {

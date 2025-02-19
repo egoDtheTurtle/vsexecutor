@@ -2,7 +2,7 @@
   "name": "vsexecutor",
   "displayName": "VSExecutor",
   "description": "Execute lego lua with vscode button.",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "publisher": "egoDtheTurtle",
   "repository": {
     "type": "git",

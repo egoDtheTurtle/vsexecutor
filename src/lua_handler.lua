@@ -8,6 +8,17 @@ local ws = WebSocket and WebSocket.connect or websocket and websocket.connect
 local host = getgenv().EthernetIPv4 or game.Players.LocalPlayer.PlayerGui:FindFirstChild('TouchGui') and "10.0.2.2" or "localhost"
 local wsUrl = "ws://" .. host .. ":1306"
 
+local function isValidJSON(str)
+    local success, result = pcall(function()
+        return HttpService:JSONDecode(str)
+    end)
+    if success and result then
+        return true
+    else
+        return false
+    end
+end
+
 local function connectWebSocket()
     getgenv().web = nil
     repeat wait() until pcall(function()
@@ -16,7 +27,11 @@ local function connectWebSocket()
     end) == true
 
     getgenv().web.OnMessage:Connect(function(msg)
-        if msg ~= "Client connected" and msg ~= "Client disconnected" then
+        if msg ~= "Client connected" and msg ~= "Client disconnected"
+        and ( -- Detect to prevent overflow error with multiple instances connected to the websocket (because of the websocket send to server "Script executed" below)
+            not string.find(msg, '"Message":') and not string.find(msg, '"Tag":')
+            or not isValidJSON(msg)
+        ) then
             if getgenv().web then
                 local messageType2 = tostring(messageType)
                 getgenv().web:Send(HttpService:JSONEncode({
