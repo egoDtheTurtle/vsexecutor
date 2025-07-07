@@ -73,39 +73,52 @@ if getgenv().LogGameOutput then
     end)
 else
     -- Not using ":" to prevent getmetatable issues
-    local oldprint = print
-    getgenv().print = function(...)
+    
+    -- Using a BindableEvent to call the function preventing thread cannot access
+    local BindEvent = Instance.new("BindableEvent")
+    BindEvent.Event:Connect(function(f) return f() end)
+
+    local oldprint 
+    oldprint = hookfunction(getgenv().print,function(...)
         local args = {...}
-        if getgenv().web then
-            getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
-                ["Tag"] = "Output",
-                ["Message"] = args
-            }))
-        end
+        BindEvent:Fire(function() 
+            if getgenv().web then
+                getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
+                    ["Tag"] = "Output",
+                    ["Message"] = args
+                }))
+            end
+        end)
         return oldprint(...)
-    end
+    end)
+    
 
     local oldwarn = warn
+    
     getgenv().warn = function(...)
         local args = {...}
-        if getgenv().web then
-            getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
-                ["Tag"] = "Warning",
-                ["Message"] = args
-            }))
-        end
+        BindEvent:Fire(function() 
+            if getgenv().web then
+                getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
+                    ["Tag"] = "Warning",
+                    ["Message"] = args
+                }))
+            end
+        end)
         return oldwarn(...)
     end
 
     local olderror = error
     getgenv().error = function(...)
         local args = {...}
-        if getgenv().web then
-            getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
-                ["Tag"] = "Error",
-                ["Message"] = args
-            }))
-        end
+        BindEvent:Fire(function() 
+            if getgenv().web then
+                getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
+                    ["Tag"] = "Error",
+                    ["Message"] = args
+                }))
+            end
+        end)
         return olderror(...)
     end
 end
