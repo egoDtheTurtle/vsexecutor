@@ -3,10 +3,9 @@ if not game:IsLoaded() then
 end
 
 local HttpService = game.HttpService -- Not using GetService and using HttpService.JSONEncode(HttpService, ...) to call to prevent issue with getrawmetatable
-local ws = WebSocket and WebSocket.connect or websocket and websocket.connect
+local wsConnect = WebSocket and WebSocket.connect or websocket and websocket.connect
 
 local host = getgenv().EthernetIPv4 or game.Players.LocalPlayer.PlayerGui:FindFirstChild('TouchGui') and "10.0.2.2" or "localhost"
-local wsUrl = "ws://" .. host .. ":1306"
 
 local function isValidJSON(str)
     local success, result = pcall(function()
@@ -20,21 +19,29 @@ local function isValidJSON(str)
 end
 
 local function connectWebSocket()
-    getgenv().web = nil
-    repeat wait() until pcall(function()
-        getgenv().web = ws(wsUrl)
-        if not getgenv().web then wait(2) end
-    end) == true
+    local VSExtensionWS = nil
 
-    getgenv().web.OnMessage:Connect(function(msg)
+    local success = pcall(function()
+        spawn(function()
+            VSExtensionWS = wsConnect("ws://" .. host .. ":1306")
+        end)
+        local timeout = tick()
+        repeat wait() until VSExtensionWS or tick() - timeout > 5
+        if not VSExtensionWS or typeof(VSExtensionWS) ~= "WebSocket" then
+            return connectWebSocket()
+        end
+    end)
+    if not success then return connectWebSocket() end
+    
+    VSExtensionWS.OnMessage:Connect(function(msg)
         if msg ~= "Client connected" and msg ~= "Client disconnected"
         and ( -- Detect to prevent overflow error with multiple instances connected to the websocket (because of the websocket send to server "Script executed" below)
             not string.find(msg, '"Message":') and not string.find(msg, '"Tag":')
             or not isValidJSON(msg)
         ) then
-            if getgenv().web then
+            if VSExtensionWS then
                 local messageType2 = tostring(messageType)
-                getgenv().web:Send(HttpService:JSONEncode({
+                VSExtensionWS:Send(HttpService:JSONEncode({
                     ["Tag"] = "Websocket",
                     ["Message"] = "Script executed"
                 }))
@@ -55,10 +62,11 @@ local function connectWebSocket()
         end
     end)
     
-    getgenv().web.OnClose:Connect(function()
+    VSExtensionWS.OnClose:Connect(function()
         connectWebSocket()
     end)
 end
+
 connectWebSocket()
 
 if getgenv().LogGameOutput then
@@ -79,46 +87,51 @@ else
     BindEvent.Event:Connect(function(f) return f() end)
 
     local oldprint 
-    oldprint = hookfunction(getgenv().print,function(...)
-        local args = {...}
-        BindEvent:Fire(function() 
-            if getgenv().web then
-                getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
-                    ["Tag"] = "Output",
-                    ["Message"] = args
-                }))
-            end
-        end)
+    oldprint = hookfunction(getgenv().print, function(...)
+        if checkcaller() then
+            local args = {...}
+            BindEvent:Fire(function() 
+                if getgenv().web then
+                    getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
+                        ["Tag"] = "Output",
+                        ["Message"] = args
+                    }))
+                end
+            end)
+        end
         return oldprint(...)
     end)
     
 
-    local oldwarn = warn
-    
-    getgenv().warn = function(...)
-        local args = {...}
-        BindEvent:Fire(function() 
-            if getgenv().web then
-                getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
-                    ["Tag"] = "Warning",
-                    ["Message"] = args
-                }))
-            end
-        end)
+    local oldwarn
+    oldwarn = hookfunction(getgenv().warn, function(...)
+        if checkcaller() then
+            local args = {...}
+            BindEvent:Fire(function() 
+                if getgenv().web then
+                    getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
+                        ["Tag"] = "Warning",
+                        ["Message"] = args
+                    }))
+                end
+            end)
+        end
         return oldwarn(...)
-    end
+    end)
 
-    local olderror = error
-    getgenv().error = function(...)
-        local args = {...}
-        BindEvent:Fire(function() 
-            if getgenv().web then
-                getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
-                    ["Tag"] = "Error",
-                    ["Message"] = args
-                }))
-            end
-        end)
+    local olderror
+    olderror = hookfunction(getgenv().error, function(...)
+        if checkcaller() then
+            local args = {...}
+            BindEvent:Fire(function() 
+                if getgenv().web then
+                    getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
+                        ["Tag"] = "Error",
+                        ["Message"] = args
+                    }))
+                end
+            end)
+        end
         return olderror(...)
     end
 end
