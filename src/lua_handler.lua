@@ -74,13 +74,13 @@ local function connectWebSocket()
         return connectWebSocket() 
     end
 
-    local messageCooldown = 0
+    getgenv().VSExecutor_messageCooldown = 0
     VSExtensionWS.OnMessage:Connect(function(msg)
         
-        if tick() - messageCooldown < 0.1 then
+        if tick() - getgenv().VSExecutor_messageCooldown < 0.1 then
             return
         end
-        messageCooldown = tick()
+        getgenv().VSExecutor_messageCooldown = tick()
 
         local isJson, parsedData = isValidJSON(msg)
         
