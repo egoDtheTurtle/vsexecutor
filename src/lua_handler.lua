@@ -80,14 +80,14 @@ if getgenv().LogGameOutput then
         end
     end)
 else
-    -- Not using ":" to prevent getmetatable issues
+    -- # Not using ":" to prevent getmetatable issues
     
     -- Using a BindableEvent to call the function preventing thread cannot access
     local BindEvent = Instance.new("BindableEvent")
     BindEvent.Event:Connect(function(f) return f() end)
 
-    local oldprint 
-    oldprint = hookfunction(getgenv().print, function(...)
+    local oldprint = getgenv().print
+    getgenv().print = function(...)
         if checkcaller() then
             local args = {...}
             BindEvent:Fire(function() 
@@ -100,11 +100,11 @@ else
             end)
         end
         return oldprint(...)
-    end)
+    end
     
 
-    local oldwarn
-    oldwarn = hookfunction(getgenv().warn, function(...)
+    local oldwarn = getgenv().warn
+    getgenv().warn = function(...)
         if checkcaller() then
             local args = {...}
             BindEvent:Fire(function() 
@@ -117,10 +117,10 @@ else
             end)
         end
         return oldwarn(...)
-    end)
+    end
 
-    local olderror
-    olderror = hookfunction(getgenv().error, function(...)
+    local olderror = getgenv().error
+    getgenv().error = function(...)
         if checkcaller() then
             local args = {...}
             BindEvent:Fire(function() 
@@ -133,5 +133,5 @@ else
             end)
         end
         return olderror(...)
-    end)
+    end
 end
