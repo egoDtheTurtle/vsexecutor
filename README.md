@@ -1,3 +1,15 @@
+## Features
+
+- Execute Roblox Lua scripts directly from the Visual Studio Code with a single click.
+- Debug console displays in-game script errors and bugs in the VSCode console.
+- Supports multiple instances — choose which client to execute the script on.
+
+
+## Preview
+
+https://github.com/user-attachments/assets/6c0e6122-e5fb-40d6-b9e1-f8036ebe23ee
+
+
 ## Installation
 
 1. Install the [vsexecutor.vsix](https://github.com/egoDtheTurtle/vsexecutor/releases) file.
@@ -19,7 +31,7 @@ getgenv().LogGameOutput = true
 
 ## Troubleshooting
 
-- **The Execute button is stuck at "No Clients" - Can't execute the script**
+**The Execute button is stuck at "No Clients" - Can't execute the script**
 
 1. Make sure you have joined Roblox with the loadstring script placed inside the autoexec folder.
 
@@ -29,11 +41,12 @@ getgenv().LogGameOutput = true
 
 4. Add this line at the top of the loadstring script (inside the autoexec folder):
 ```lua
-getgenv().EthernetIPv4 = "Your Ethernet IPv4"
+getgenv().EthernetIPv4 = "Your Ethernet IPv4"`
 ```
 To find your Ethernet IPv4, install and run [EthernetIPv4.exe](https://github.com/egoDtheTurtle/vsexecutor/releases).
 
-- If the above method doesn't work, it might be because the executor/emulator does not support localhost connection. Try using a different executor/emulator.
+
+If the above methods doesn't work, it might be because the executor/emulator does not support localhost connection. Try using a different executor/emulator.
 
 
 ## If the new version (WebSocket-based) isn't working for you  
