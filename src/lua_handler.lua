@@ -88,50 +88,44 @@ else
 
     local oldprint = getgenv().print
     getgenv().print = function(...)
-        if checkcaller() then
-            local args = {...}
-            BindEvent:Fire(function() 
-                if getgenv().web then
-                    getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
-                        ["Tag"] = "Output",
-                        ["Message"] = args
-                    }))
-                end
-            end)
-        end
+        local args = {...}
+        BindEvent:Fire(function() 
+            if getgenv().web then
+                getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
+                    ["Tag"] = "Output",
+                    ["Message"] = args
+                }))
+            end
+        end)
         return oldprint(...)
     end
     
 
     local oldwarn = getgenv().warn
     getgenv().warn = function(...)
-        if checkcaller() then
-            local args = {...}
-            BindEvent:Fire(function() 
-                if getgenv().web then
-                    getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
-                        ["Tag"] = "Warning",
-                        ["Message"] = args
-                    }))
-                end
-            end)
-        end
+        local args = {...}
+        BindEvent:Fire(function() 
+            if getgenv().web then
+                getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
+                    ["Tag"] = "Warning",
+                    ["Message"] = args
+                }))
+            end
+        end)
         return oldwarn(...)
     end
 
     local olderror = getgenv().error
     getgenv().error = function(...)
-        if checkcaller() then
-            local args = {...}
-            BindEvent:Fire(function() 
-                if getgenv().web then
-                    getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
-                        ["Tag"] = "Error",
-                        ["Message"] = args
-                    }))
-                end
-            end)
-        end
+        local args = {...}
+        BindEvent:Fire(function() 
+            if getgenv().web then
+                getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
+                    ["Tag"] = "Error",
+                    ["Message"] = args
+                }))
+            end
+        end)
         return olderror(...)
     end
 end
