@@ -11,7 +11,7 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/egoDtheTurtle/vsexecu
 
 ## Usage
 
-- In Visual Studio Code, you should see the "Execute" button at the bottom (Status Bar), or simply press `F1` and type "Execute Lua Script", then press Enter to run the script.
+- In Visual Studio Code, you should see the "Execute" or "No Clients" button at the bottom (Status Bar), or simply press `F1` and type "Execute Lua Script", then press Enter to run the script.
 - Press `Ctrl` + `` ` `` to open the Terminal. Then go to the "Output" section, where you will find a dropdown showing outputs from other extensions. Select `VSExecutor`, and your in-game Roblox developer console data will be synced with the console. Note: This will only sync client (executor) outputs. To also sync the game's console output, add the following line at the top of the loadstring script (inside the autoexec folder):
 ```lua
 getgenv().LogGameOutput = true
@@ -19,17 +19,19 @@ getgenv().LogGameOutput = true
 
 ## Troubleshooting
 
-- **Got message "WebSocket connection is not open. Please check the connection." after pressing "Execute" button:**
-1. Try to disable your firewall (completely).
-2. Close all the VSCode tabs (File -> Exit).
-After completing these steps, try again.
+- **The Execute button is stuck at "No Clients" - Can't execute the script**
 
-- **Script not executing in-game after pressing "Execute" button:**
-1. Add this line at the top of the loadstring script (inside the autoexec folder):
+1. Make sure you have joined Roblox with the loadstring script placed inside the autoexec folder.
+
+2. Try to disable your firewall (completely).
+
+3. Close all the VSCode tabs (File -> Exit).
+
+4. Add this line at the top of the loadstring script (inside the autoexec folder):
 ```lua
 getgenv().EthernetIPv4 = "Your Ethernet IPv4"
 ```
-2. To find your Ethernet IPv4, install and run [EthernetIPv4.exe](https://github.com/egoDtheTurtle/vsexecutor/releases).
+To find your Ethernet IPv4, install and run [EthernetIPv4.exe](https://github.com/egoDtheTurtle/vsexecutor/releases).
 
 - If the above method doesn't work, it might be because the executor/emulator does not support localhost connection. Try using a different executor/emulator.
 
