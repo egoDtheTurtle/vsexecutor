@@ -18,8 +18,8 @@ local function isValidJSON(str)
     end
 end
 
+local VSExtensionWS
 local function connectWebSocket()
-    local VSExtensionWS = nil
 
     local success = pcall(function()
         spawn(function()
@@ -71,9 +71,9 @@ connectWebSocket()
 
 if getgenv().LogGameOutput then
     game:GetService("LogService").MessageOut:Connect(function(message, messageType)
-        if getgenv().web then
+        if VSExtensionWS then
             local messageType2 = tostring(messageType)
-            getgenv().web:Send(HttpService:JSONEncode({
+            VSExtensionWS:Send(HttpService:JSONEncode({
                 ["Tag"] = messageType2:gsub("Enum.MessageType.Message", ""),
                 ["Message"] = tostring(message)
             }))
@@ -89,14 +89,14 @@ else
     local oldprint = getgenv().print
     getgenv().print = function(...)
         local args = {...}
-        BindEvent:Fire(function() 
-            if getgenv().web then
-                getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
+        if VSExtensionWS then
+            BindEvent:Fire(function() 
+                VSExtensionWS.Send(VSExtensionWS, HttpService.JSONEncode(HttpService, {
                     ["Tag"] = "Output",
                     ["Message"] = args
                 }))
-            end
-        end)
+            end)
+        end
         return oldprint(...)
     end
     
@@ -104,28 +104,28 @@ else
     local oldwarn = getgenv().warn
     getgenv().warn = function(...)
         local args = {...}
-        BindEvent:Fire(function() 
-            if getgenv().web then
-                getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
+        if VSExtensionWS then
+            BindEvent:Fire(function() 
+                VSExtensionWS.Send(VSExtensionWS, HttpService.JSONEncode(HttpService, {
                     ["Tag"] = "Warning",
                     ["Message"] = args
                 }))
-            end
-        end)
+            end)
+        end
         return oldwarn(...)
     end
 
     local olderror = getgenv().error
     getgenv().error = function(...)
         local args = {...}
-        BindEvent:Fire(function() 
-            if getgenv().web then
-                getgenv().web.Send(getgenv().web, HttpService.JSONEncode(HttpService, {
+        if VSExtensionWS then
+            BindEvent:Fire(function() 
+                VSExtensionWS.Send(VSExtensionWS, HttpService.JSONEncode(HttpService, {
                     ["Tag"] = "Error",
                     ["Message"] = args
                 }))
-            end
-        end)
+            end)
+        end
         return olderror(...)
     end
 end
