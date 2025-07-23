@@ -1,5 +1,3 @@
-getgenv().EthernetIPv4 = "10.147.17.162"
-
 if not game:IsLoaded() then
     game.Loaded:Wait()
 end
