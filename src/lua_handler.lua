@@ -61,8 +61,11 @@ local function connectWebSocket()
         
         local timeout = tick()
         repeat wait() until VSExtensionWS or tick() - timeout > 5
-        
-        if not VSExtensionWS or typeof(VSExtensionWS) ~= "WebSocket" then
+        if not VSExtensionWS
+        or (
+            typeof(VSExtensionWS) ~= "WebSocket"
+            and typeof(VSExtensionWS) ~= "table"
+        ) then
             return connectWebSocket()
         end
     end)
