@@ -5,7 +5,7 @@ end
 local HttpService = game.HttpService
 local wsConnect = WebSocket and WebSocket.connect or websocket and websocket.connect
 
-local host = getgenv().EthernetIPv4 or game.Players.LocalPlayer.PlayerGui:FindFirstChild('TouchGui') and "10.0.2.2" or "localhost"
+local host = "localhost"
 local playerName = game.Players.LocalPlayer.Name
 
 local function isValidJSON(str)
@@ -54,17 +54,17 @@ local function sendOutput(tag, message)
 end
 
 local function connectWebSocket()
-    local success = pcall(function()
-        spawn(function()
-            VSExtensionWS = wsConnect("ws://" .. host .. ":1306")
-        end)
-        
-        local timeout = tick()
-        repeat wait() until VSExtensionWS or tick() - timeout > 5
+    local success, err = pcall(function()
+        VSExtensionWS = wsConnect("ws://" .. host .. ":1306")
+
+        -- local timeout = tick()
+        -- repeat wait() until VSExtensionWS or tick() - timeout > 3
+
         if not VSExtensionWS
         or (
             typeof(VSExtensionWS) ~= "WebSocket"
             and typeof(VSExtensionWS) ~= "table"
+            and typeof(VSExtensionWS) ~= "WebsocketObject"
         ) then
             return connectWebSocket()
         end
