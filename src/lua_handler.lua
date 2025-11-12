@@ -5,7 +5,7 @@ end
 local HttpService = game.HttpService
 local wsConnect = WebSocket and WebSocket.connect or websocket and websocket.connect
 
-local host = "localhost"
+local host = getgenv().EthernetIPv4 or game.Players.LocalPlayer.PlayerGui:FindFirstChild('TouchGui') and "10.0.2.2" or "localhost"
 local playerName = game.Players.LocalPlayer.Name
 
 local function isValidJSON(str)
