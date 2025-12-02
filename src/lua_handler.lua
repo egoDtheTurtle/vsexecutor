@@ -55,16 +55,19 @@ end
 
 local function connectWebSocket()
     local success, err = pcall(function()
-        VSExtensionWS = wsConnect("ws://" .. host .. ":1306")
+        spawn(function()
+            VSExtensionWS = wsConnect("ws://" .. host .. ":1306")
+        end)
 
-        -- local timeout = tick()
-        -- repeat wait() until VSExtensionWS or tick() - timeout > 3
+        local timeout = tick()
+        repeat wait() until VSExtensionWS or tick() - timeout > 3
 
         if not VSExtensionWS
         or (
             typeof(VSExtensionWS) ~= "WebSocket"
             and typeof(VSExtensionWS) ~= "table"
             and typeof(VSExtensionWS) ~= "WebsocketObject"
+            and typeof(VSExtensionWS) ~= "userdata"
         ) then
             return connectWebSocket()
         end
