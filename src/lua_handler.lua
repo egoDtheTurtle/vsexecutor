@@ -27,9 +27,12 @@ local function sendMessage(messageType, data)
             Type = messageType
         }
         
-        -- Add additional data to the message
         for key, value in pairs(data or {}) do
-            message[key] = value
+            local stringValue = value
+            if typeof(value) ~= "string" and typeof(value) ~= "number" and typeof(value) ~= "boolean" then
+                stringValue = tostring(value)
+            end
+            message[key] = stringValue
         end
         
         local success, jsonString = pcall(function()
@@ -97,6 +100,9 @@ local function connectWebSocket()
                         if scriptFunc then
                             local execSuccess, execError = pcall(scriptFunc)
                             if not execSuccess then
+                                -- Remove non-printable characters
+                                execError = execError:gsub("[%z\1-\31\127-\255]", "")
+                                
                                 sendOutput("Error", "Script execution failed: " .. tostring(execError))
                             end
                         else
@@ -140,10 +146,8 @@ local function connectWebSocket()
         connectWebSocket()
     end)
     
-    -- Wait a moment for the connection to fully establish, then register
     wait(0.5)
     
-    -- Register this client as a game client with retry mechanism
     local function registerClient()
         if VSExtensionWS then
             sendMessage("register_game", {
@@ -158,7 +162,6 @@ local function connectWebSocket()
     registerClient()
 end
 
--- Start the connection
 connectWebSocket()
 
 -- Hook into print, warn, and error functions to send output to VS Code
