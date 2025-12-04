@@ -19,6 +19,49 @@ local function isValidJSON(str)
     end
 end
 
+local function deepCopy(original, visited, depth)
+    visited = visited or {}
+    depth = depth or 0
+    
+    if depth > 50 then
+        return "-- STACK OVERFLOW"
+    end
+    
+    if visited[original] then
+        return "-- CIRCULAR REFERENCE"
+    end
+    
+    if typeof(original) ~= "table" then
+        return original
+    end
+    
+    visited[original] = true
+    local copy = {}
+    
+    for k, v in pairs(original) do
+        if typeof(v) == "table" then
+            copy[k] = deepCopy(v, visited, depth + 1)
+        else
+            copy[k] = v
+        end
+    end
+    
+    visited[original] = nil
+    return copy
+end
+
+local function convertTableToString(tbl)
+    for key, value in pairs(tbl) do
+        local valueType = typeof(value)
+        if valueType == "table" then
+            convertTableToString(value)
+        elseif valueType ~= "string" and valueType ~= "number" and valueType ~= "boolean" then
+            tbl[key] = tostring(value)
+        end
+    end
+    return tbl
+end
+
 local VSExtensionWS
 
 local function sendMessage(messageType, data)
@@ -27,12 +70,11 @@ local function sendMessage(messageType, data)
             Type = messageType
         }
         
-        for key, value in pairs(data or {}) do
-            local stringValue = value
-            if typeof(value) ~= "string" and typeof(value) ~= "number" and typeof(value) ~= "boolean" then
-                stringValue = tostring(value)
-            end
-            message[key] = stringValue
+        local dataTable = deepCopy(data or {})
+        dataTable = convertTableToString(dataTable)
+
+        for key, value in pairs(dataTable) do
+            message[key] = value
         end
         
         local success, jsonString = pcall(function()
