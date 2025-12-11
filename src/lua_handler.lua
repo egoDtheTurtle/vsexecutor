@@ -108,12 +108,9 @@ local function connectWebSocket()
         repeat wait() until VSExtensionWS or tick() - timeout > 3
 
         if not VSExtensionWS
-        or (
-            typeof(VSExtensionWS) ~= "WebSocket"
-            and typeof(VSExtensionWS) ~= "table"
-            and typeof(VSExtensionWS) ~= "WebsocketObject"
-            and typeof(VSExtensionWS) ~= "userdata"
-        ) then
+        or not pcall(function()
+            return VSExtensionWS.OnMessage and VSExtensionWS.OnClose and VSExtensionWS.Send
+        end) then
             return connectWebSocket()
         end
     end)
