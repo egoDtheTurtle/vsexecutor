@@ -105,7 +105,7 @@ local function connectWebSocket()
         end)
 
         local timeout = tick()
-        repeat wait() until VSExtensionWS or tick() - timeout > 3
+        repeat wait() until VSExtensionWS or tick() - timeout > 5
 
         if not VSExtensionWS
         or not pcall(function()
@@ -217,7 +217,7 @@ else
     BindEvent.Event:Connect(function(f) return f() end)
 
     local oldprint = getgenv().print
-    getgenv().print = function(...)
+    getgenv().print = newcclosure(function(...)
         local args = {...}
         if VSExtensionWS then
             BindEvent:Fire(function() 
@@ -225,10 +225,10 @@ else
             end)
         end
         return oldprint(...)
-    end
+    end)
 
     local oldwarn = getgenv().warn
-    getgenv().warn = function(...)
+    getgenv().warn = newcclosure(function(...)
         local args = {...}
         if VSExtensionWS then
             BindEvent:Fire(function() 
@@ -236,16 +236,5 @@ else
             end)
         end
         return oldwarn(...)
-    end
-
-    local olderror = getgenv().error
-    getgenv().error = function(...)
-        local args = {...}
-        if VSExtensionWS then
-            BindEvent:Fire(function() 
-                sendOutput("Error", args)
-            end)
-        end
-        return olderror(...)
-    end
+    end)
 end
