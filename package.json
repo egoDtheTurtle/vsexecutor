@@ -1,21 +1,29 @@
 {
   "name": "vsexecutor",
   "displayName": "VSExecutor",
-  "description": "Execute lego lua with vscode button.",
-  "version": "0.0.6",
+  "description": "Execute Roblox Lua scripts from VS Code.",
+  "version": "0.0.7",
   "publisher": "egoDtheTurtle",
   "repository": {
     "type": "git",
     "url": "https://github.com/egoDtheTurtle/VSExecutor"
   },
+  "files": [
+    "out/**/*",
+    "src/vsexecutor.lua",
+    "server.js",
+    "README.md",
+    "LICENSE.md",
+    "package.json"
+  ],
   "engines": {
     "vscode": "^1.95.0"
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "lint": "eslint .",
+    "lint": "tsc -p ./ --noEmit",
     "pretest": "npm run compile",
-    "test": "node ./out/test/runTest.js",
+    "test": "node --test test/**/*.test.js",
     "watch": "tsc -w"
   },
   "activationEvents": [
@@ -27,27 +35,67 @@
     "commands": [
       {
         "command": "extension.executeFile",
-        "title": "Execute Lua Script"
+        "title": "VSExecutor: Execute Main Editor"
+      },
+      {
+        "command": "extension.copyIPv4",
+        "title": "VSExecutor: Get Ethernet IPv4"
+      },
+      {
+        "command": "extension.copyAutoexec",
+        "title": "VSExecutor: Copy Autoexec Script"
+      },
+      {
+        "command": "extension.refreshClients",
+        "title": "VSExecutor: Refresh Clients"
+      },
+      {
+        "command": "extension.openOutputViewer",
+        "title": "VSExecutor: Open Output Viewer"
       }
     ],
     "views": {
       "explorer": [
-        {
-          "id": "executeLuaFile",
-          "name": "Execute Lua Script"
-        }
+          {
+            "id": "executeLuaFile",
+            "name": "Execute Script"
+          }
       ]
+    },
+    "configuration": {
+      "title": "VSExecutor",
+      "properties": {
+        "vsexecutor.host": {
+          "type": "string",
+          "default": "localhost",
+          "description": "Host where the shared VSExecutor bridge is running."
+        },
+        "vsexecutor.port": {
+          "type": "number",
+          "default": 1306,
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Port used by the shared VSExecutor bridge."
+        },
+        "vsexecutor.defaultLoaderMode": {
+          "type": "string",
+          "enum": [
+            "websocket",
+            "loadstring"
+          ],
+          "default": "websocket",
+          "description": "Default mode preselected by the autoexec-copy command. The Lua options table remains the execution source of truth."
+        }
+      }
     }
   },
   "dependencies": {
-    "uuid": "^11.1.0",
     "ws": "^8.0.0"
   },
   "devDependencies": {
     "@types/vscode": "^1.95.0",
     "@types/ws": "^8.5.13",
     "typescript": "^4.9.5",
-    "vsce": "^1.97.0",
-    "vscode": "^1.1.37"
+    "vsce": "^1.97.0"
   }
 }

@@ -1,547 +1,632 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import * as net from 'net';
+import * as http from 'http';
+import * as os from 'os';
 import * as process from 'process';
-
+import { execFile, spawn } from 'child_process';
+import * as crypto from 'crypto';
 import WebSocket from 'ws';
 
-import { exec } from 'child_process';
-import { spawn } from 'child_process';
+import { OutputRecord, OutputValue, OutputView } from './output-view';
 
-let ws: WebSocket;
+type Protocol = 'websocket' | 'loadstring';
+type LoaderMode = Protocol;
+const MAX_SCRIPT_BYTES = 8 * 1024 * 1024;
+
+interface ClientInfo {
+    clientId: string;
+    sessionId: string;
+    protocol: Protocol;
+    playerName: string;
+    gameName: string;
+    jobId: string;
+    placeId: string;
+    lastSeen?: number;
+}
+
+interface BridgeHealth {
+    Service: string;
+    Version: string;
+    BridgeId: string;
+    Port: number;
+    Transports: string[];
+    MaxScriptBytes?: number;
+    Pid?: number;
+}
+
+interface HttpResponse {
+    status: number;
+    body: string;
+}
+
+interface QuickPickClient extends vscode.QuickPickItem {
+    sessionId: string;
+    broadcast?: boolean;
+}
+
+let ws: WebSocket | undefined;
 let outputChannel: vscode.OutputChannel;
+let outputView: OutputView;
 let executeButton: vscode.StatusBarItem;
-let connectedClients: Map<string, string> = new Map(); // clientId -> playerName
+let lastMainEditor: vscode.TextEditor | undefined;
+let reconnectTimer: NodeJS.Timeout | undefined;
+let reconnectDelay = 500;
+let shuttingDown = false;
+const connectedClients = new Map<string, ClientInfo>();
 
-export async function activate(context: vscode.ExtensionContext) {
-    console.log('Extension activated!');
-    
-    // Start the server and wait for WebSocket to be ready
+function config() {
+    return vscode.workspace.getConfiguration('vsexecutor');
+}
+
+function bridgeHost() {
+    return config().get<string>('host', 'localhost');
+}
+
+function bridgePort() {
+    return config().get<number>('port', 1306);
+}
+
+function newId() {
+    return typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : crypto.randomBytes(16).toString('hex');
+}
+
+function logToOutput(message: string) {
+    outputChannel?.appendLine(message);
+}
+
+function formatLogMessage(tag: string, message: string, level = 'INFO') {
+    const timestamp = new Date().toLocaleTimeString([], { hour12: false });
+    const normalizedTag = tag.trim().toLowerCase();
+    const label = normalizedTag === level.toLowerCase() ? level : `${level} [${tag}]`;
+    return `${timestamp} ${label}: ${message}`;
+}
+
+function log(tag: string, message: string, level = 'INFO') {
+    logToOutput(formatLogMessage(tag, message, level));
+}
+
+function levelForTag(tag: string) {
+    const value = tag.toLowerCase();
+    if (value.includes('error')) return 'ERROR';
+    if (value.includes('warning')) return 'WARNING';
+    if (value.includes('success')) return 'SUCCESS';
+    if (value.includes('debug')) return 'DEBUG';
+    return 'INFO';
+}
+
+function formatLegacyMessage(value: unknown): string {
+    if (typeof value === 'string') return value;
+    if (value === undefined) return '';
     try {
-        await startServer();
-        // Wait for a bit to ensure the WebSocket server is fully initialized
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Adjust delay as needed
-    } catch (err) {
-        console.error('Error while starting the server:', err);
-        vscode.window.showErrorMessage('Failed to start the WebSocket server.');
+        return JSON.stringify(value, null, 2);
+    } catch (_) {
+        return String(value);
+    }
+}
+
+function formatOutputValue(value: OutputValue | unknown, depth = 0): string {
+    if (!value || typeof value !== 'object') return String(value ?? 'nil');
+    const typed = value as OutputValue;
+    if (typed.kind === 'table') {
+        const entries = typed.entries || [];
+        const body = entries.map(entry => `${'  '.repeat(depth + 1)}${entry.key} = ${formatOutputValue(entry.value, depth + 1)}`).join('\n');
+        const suffix = typed.truncated ? '\n' + '  '.repeat(depth + 1) + '... safety limit reached' : '';
+        return `{${body ? `\n${body}\n${'  '.repeat(depth)}` : ''}${suffix}}`;
+    }
+    if (typed.kind === 'instance') {
+        const details = [typed.className, typed.fullName].filter(Boolean).join(' | ');
+        return details ? `${typed.name || 'Instance'} <${details}>` : (typed.name || 'Instance');
+    }
+    if (typed.kind === 'nil') return 'nil';
+    if (typed.kind === 'userdata') return String(typed.value || 'userdata');
+    return String(typed.value ?? 'nil');
+}
+
+function outputMessage(data: Record<string, unknown>) {
+    const values = Array.isArray(data.Values) ? data.Values as OutputValue[] : undefined;
+    return {
+        text: values ? values.map(value => formatOutputValue(value)).join(' ') : formatLegacyMessage(data.Message),
+        values,
+    };
+}
+
+function makeClient(data: Record<string, unknown>): ClientInfo {
+    const protocol = data.Protocol === 'loadstring' ? 'loadstring' : 'websocket';
+    const clientId = String(data.ClientId || data.SessionId || newId());
+    return {
+        clientId,
+        sessionId: String(data.SessionId || clientId),
+        protocol,
+        playerName: String(data.PlayerName || 'Unknown player'),
+        gameName: String(data.GameName || 'Unknown game'),
+        jobId: String(data.JobId || 'Unknown job'),
+        placeId: String(data.PlaceId || 'Unknown place'),
+        lastSeen: typeof data.LastSeen === 'number' ? data.LastSeen : undefined,
+    };
+}
+
+function applyClientList(data: unknown) {
+    const clients = data && typeof data === 'object' && Array.isArray((data as Record<string, unknown>).Clients)
+        ? (data as Record<string, unknown>).Clients as unknown[]
+        : [];
+    connectedClients.clear();
+    for (const value of clients) {
+        if (!value || typeof value !== 'object') continue;
+        const client = makeClient(value as Record<string, unknown>);
+        connectedClients.set(client.sessionId, client);
+    }
+    updateButtonText();
+}
+
+function handleBridgeMessage(raw: WebSocket.RawData) {
+    let data: Record<string, unknown>;
+    try {
+        const parsed = JSON.parse(raw.toString());
+        if (!parsed || typeof parsed !== 'object') return;
+        data = parsed as Record<string, unknown>;
+    } catch (_) {
+        log('Bridge', raw.toString(), 'WARNING');
         return;
     }
 
-    // Create an output channel with language support for better formatting
-    outputChannel = vscode.window.createOutputChannel('VSExecutor', 'log');
-    outputChannel.show(); // Show the output channel
+    const type = String(data.Type || '');
+    if (type === 'bridge_ready') {
+        log('Bridge', `Connected to bridge ${String(data.Version || '')}` , 'SUCCESS');
+        return;
+    }
+    if (type === 'client_list') {
+        applyClientList(data);
+        return;
+    }
+    if (type === 'client_connected') {
+        const client = makeClient(data);
+        connectedClients.set(client.sessionId, client);
+        updateButtonText();
+        return;
+    }
+    if (type === 'client_disconnected') {
+        const sessionId = String(data.SessionId || data.ClientId || '');
+        connectedClients.delete(sessionId);
+        updateButtonText();
+        return;
+    }
+    if (type === 'script_sent' || type === 'script_queued') {
+        log('Execute', type === 'script_sent' ? 'Script sent to the WebSocket client' : 'Script queued for the loadstring client', 'SUCCESS');
+        return;
+    }
+    if (type === 'error') {
+        log(String(data.Tag || 'Bridge'), String(data.Message || 'Unknown bridge error'), 'ERROR');
+        return;
+    }
+    if (type !== 'game_message') return;
 
-    // Create a button in the status bar
-    executeButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
-    executeButton.text = "$(rocket) Execute Lua";
-    executeButton.command = "extension.executeFile";
-    executeButton.tooltip = "Execute current Lua file";
-    executeButton.show();
-
-    // Update button visibility based on active editor
-    updateButtonVisibility();
-
-    // Listen for active editor changes to show/hide the button
-    vscode.window.onDidChangeActiveTextEditor(() => {
-        updateButtonVisibility();
-    });
-
-    // WebSocket connection setup
-    ws = new WebSocket('ws://localhost:1306');
-
-    ws.on('open', () => {
-        logToOutput(formatLogMessage('WebSocket', 'Connection established successfully', LogLevel.SUCCESS));
-        
-        // Register as VS Code extension
-        ws.send(JSON.stringify({ Type: 'register_extension' }));
-        
-        // Request current client list after a short delay
-        setTimeout(() => {
-            ws.send(JSON.stringify({ Type: 'get_client_list' }));
-        }, 100);
-    });
-
-    ws.on('message', (data) => {
-        let message: string;
-
-        if (typeof data === 'string') {
-            message = data;
-        } else if (data instanceof Buffer || data instanceof ArrayBuffer) {
-            message = Buffer.isBuffer(data) ? data.toString() : new TextDecoder().decode(data);
-        } else {
-            message = String(data);
-        }
-
-        let logtag: string;
-        let logmessage: string;
-        let logLevel: LogLevel = LogLevel.INFO;
-
-        try {
-            const parsedData = JSON.parse(message);
-            
-            logtag = parsedData.Tag || "Output";
-
-            // Handle client connection messages
-            if (parsedData.Type === 'client_connected') {
-                const clientId = parsedData.ClientId;
-                const playerName = parsedData.PlayerName;
-                connectedClients.set(clientId, playerName);
-                updateButtonText();
-                return;
-            }
-
-            // Handle client disconnection messages
-            if (parsedData.Type === 'client_disconnected') {
-                const clientId = parsedData.ClientId;
-                const playerName = connectedClients.get(clientId) || 'Unknown';
-                connectedClients.delete(clientId);
-                updateButtonText();
-                return;
-            }
-
-            // Handle client list updates
-            if (parsedData.Type === 'client_list') {
-                connectedClients.clear();
-                if (parsedData.Clients && Array.isArray(parsedData.Clients)) {
-                    parsedData.Clients.forEach((client: any) => {
-                        connectedClients.set(client.ClientId, client.PlayerName);
-                    });
-                }
-                updateButtonText();
-                return;
-            }
-
-            // Handle game messages
-            if (parsedData.Type === 'game_message') {
-                logtag = parsedData.Tag || "Output";
-                logmessage = parsedData.Message;
-                
-                // Determine log level based on tag or content
-                if (logtag.toLowerCase().includes('error')) {
-                    logLevel = LogLevel.ERROR;
-                } else if (logtag.toLowerCase().includes('warning')) {
-                    logLevel = LogLevel.WARNING;
-                } else if (logtag.toLowerCase().includes('success')) {
-                    logLevel = LogLevel.SUCCESS;
-                } else if (logtag.toLowerCase().includes('debug')) {
-                    logLevel = LogLevel.DEBUG;
-                }
-                
-                const formattedMessage = formatLogMessage(logtag, logmessage, logLevel);
-                logToOutput(formattedMessage);
-                return;
-            }
-
-            let templogmessage = JSON.stringify(parsedData.Message);
-
-            if (templogmessage.startsWith('[') && templogmessage.endsWith(']')) {
-                templogmessage = templogmessage.slice(1, -1);
-                templogmessage = templogmessage.replace(/(?<!\\)"/g, '');
-                templogmessage = templogmessage.replace(/\\"/g, '"');
-            }
-
-            logmessage = templogmessage;
-            
-            // Determine log level based on tag or content
-            if (logtag.toLowerCase().includes('error')) {
-                logLevel = LogLevel.ERROR;
-            } else if (logtag.toLowerCase().includes('warning')) {
-                logLevel = LogLevel.WARNING;
-            } else if (logtag.toLowerCase().includes('success')) {
-                logLevel = LogLevel.SUCCESS;
-            } else if (logtag.toLowerCase().includes('debug')) {
-                logLevel = LogLevel.DEBUG;
-            }
-            
-        } catch (err) {
-            logtag = "WebSocket";
-            logmessage = message;
-            logLevel = LogLevel.WEBSOCKET;
-        }
-
-        logToOutput(formatLogMessage(logtag, logmessage, logLevel));
-    });
-
-    ws.on('error', (error: Error) => {
-        logToOutput(formatLogMessage('WebSocket Error', `Error: ${error}`, LogLevel.ERROR));
-    });
-
-    ws.on('close', () => {
-        logToOutput(formatLogMessage('WebSocket', 'Connection closed', LogLevel.WARNING));
-    });
-
-    let disposable = vscode.commands.registerCommand('extension.executeFile', async () => {
-        const activeEditor = vscode.window.activeTextEditor;
-        
-        if (activeEditor && activeEditor.document.languageId !== 'Log') {
-            const fileName = activeEditor.document.fileName;
-            const languageId = activeEditor.document.languageId;
-            
-            // Check if the file is a Lua file
-            if (languageId !== 'lua') {
-                logToOutput(formatLogMessage('Execute', `File type '${languageId}' is not supported. Only Lua files can be executed.`, LogLevel.ERROR));
-                vscode.window.showErrorMessage(`Only Lua files can be executed. Current file type: ${languageId}`);
-                return;
-            }
-
-            const text = activeEditor.document.getText().trim(); // Trim whitespace from the text
-
-            // Check if text has content
-            if (text) {                
-                // Check if WebSocket is open
-                if (ws.readyState === WebSocket.OPEN) {
-                    // Check connected clients
-                    if (connectedClients.size === 0) {
-                        logToOutput(formatLogMessage('Execute', 'No clients connected to execute script', LogLevel.ERROR));
-                        vscode.window.showErrorMessage('No clients connected. Please connect a client first.');
-                        return;
-                    } else if (connectedClients.size === 1) {
-                        // Single client - send directly
-                        const [clientId, playerName] = Array.from(connectedClients.entries())[0];
-                        await sendScriptToClient(text, clientId, playerName, fileName);
-                    } else {
-                        // Multiple clients - show selection dropdown
-                        const clientOptions = Array.from(connectedClients.entries()).map(([clientId, playerName]) => ({
-                            label: playerName,
-                            description: `Client ID: ${clientId}`,
-                            clientId: clientId
-                        }));
-
-                        // Add "Execute All" option at the bottom
-                        clientOptions.push({
-                            label: `$(broadcast) Execute All (${connectedClients.size} clients)`,
-                            description: 'Send script to all connected clients',
-                            clientId: 'ALL_CLIENTS'
-                        });
-
-                        const selectedClient = await vscode.window.showQuickPick(clientOptions, {
-                            placeHolder: 'Select a client to execute the script',
-                            title: `Execute Lua Script - ${connectedClients.size} clients available`
-                        });
-
-                        if (selectedClient) {
-                            if (selectedClient.clientId === 'ALL_CLIENTS') {
-                                // Execute on all clients
-                                await executeOnAllClients(text, fileName);
-                            } else {
-                                // Execute on selected client
-                                await sendScriptToClient(text, selectedClient.clientId, selectedClient.label, fileName);
-                            }
-                        } else {
-                            logToOutput(formatLogMessage('Execute', 'Script execution cancelled by user', LogLevel.WARNING));
-                        }
-                    }
-                } else {
-                    // Show error message if WebSocket is not open
-                    logToOutput(formatLogMessage('Execute', 'WebSocket connection is not open', LogLevel.ERROR));
-                    vscode.window.showInformationMessage('WebSocket connection is not open. Please check the connection.');
-                }
-            } else {
-                // Show error message if text is empty
-                logToOutput(formatLogMessage('Execute', `${fileName} file is empty - nothing to send`, LogLevel.WARNING));
-                vscode.window.showInformationMessage(`${fileName} file is empty. Nothing to send.`);
-            }
-        } else {
-            // Show error message if there is no active editor
-            logToOutput(formatLogMessage('Execute', 'No active editor found or log file selected', LogLevel.WARNING));
-            vscode.window.showInformationMessage('No active editor found. Please open a Lua file to execute.');
-        }
-    });
-
-    context.subscriptions.push(disposable, executeButton);
+    const tag = String(data.Tag || 'Output');
+    const level = levelForTag(tag);
+    const message = outputMessage(data);
+    const record: OutputRecord = {
+        timestamp: new Date().toLocaleTimeString([], { hour12: false }),
+        level,
+        tag,
+        message: message.text,
+        values: message.values,
+        gameName: typeof data.GameName === 'string' ? data.GameName : undefined,
+        jobId: typeof data.JobId === 'string' ? data.JobId : undefined,
+    };
+    log(tag, message.text, level);
+    outputView?.append(record);
 }
 
-// Function to send script to a specific client
-async function sendScriptToClient(script: string, clientId: string, playerName: string, fileName: string) {
-    const message = {
-        Type: 'execute_script',
-        ClientId: clientId,
-        Script: script
-    };
-
+function sendControl(message: Record<string, unknown>) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
     try {
         ws.send(JSON.stringify(message));
-        logToOutput(formatLogMessage('Execute', `Script sent to "${playerName}" (${clientId})`, LogLevel.SUCCESS));
-        vscode.window.showInformationMessage(`Script sent to "${playerName}" successfully.`);
+        return true;
     } catch (error) {
-        logToOutput(formatLogMessage('Execute', `Failed to send script to "${playerName}": ${error}`, LogLevel.ERROR));
-        vscode.window.showErrorMessage(`Failed to send script to "${playerName}".`);
+        log('Bridge', `Failed to send message: ${String(error)}`, 'ERROR');
+        return false;
     }
 }
 
-// Function to execute script on all connected clients
-async function executeOnAllClients(script: string, fileName: string) {
-    const clientCount = connectedClients.size;
-    let successCount = 0;
-    let failureCount = 0;
+function scheduleReconnect() {
+    if (shuttingDown || reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+        reconnectTimer = undefined;
+        connectControl();
+    }, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 10_000);
+}
 
-    logToOutput(formatLogMessage('Execute', `Broadcasting script to ${clientCount} clients...`, LogLevel.SUCCESS));
+function connectControl() {
+    if (shuttingDown || (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING))) return;
+    const socket = new WebSocket(`ws://${bridgeHost()}:${bridgePort()}`);
+    ws = socket;
+    socket.on('open', () => {
+        reconnectDelay = 500;
+        log('WebSocket', 'Control connection established', 'SUCCESS');
+        sendControl({ Type: 'register_extension', ExtensionId: newId() });
+        sendControl({ Type: 'get_client_list' });
+    });
+    socket.on('message', data => handleBridgeMessage(data));
+    socket.on('error', error => log('WebSocket', String(error), 'ERROR'));
+    socket.on('close', () => {
+        if (ws !== socket) return;
+        ws = undefined;
+        connectedClients.clear();
+        updateButtonText();
+        log('WebSocket', 'Control connection closed', 'WARNING');
+        scheduleReconnect();
+    });
+}
 
-    for (const [clientId, playerName] of connectedClients.entries()) {
-        const message = {
-            Type: 'execute_script',
-            ClientId: clientId,
-            Script: script
-        };
+function requestHttp(method: string, requestPath: string, body?: string): Promise<HttpResponse> {
+    return new Promise((resolve, reject) => {
+        const request = http.request({
+            hostname: bridgeHost(),
+            port: bridgePort(),
+            path: requestPath,
+            method,
+            headers: body === undefined ? undefined : {
+                'Content-Type': 'text/plain; charset=utf-8',
+                'Content-Length': Buffer.byteLength(body),
+            },
+        }, response => {
+            const chunks: Buffer[] = [];
+            response.on('data', chunk => chunks.push(Buffer.from(chunk)));
+            response.on('end', () => resolve({
+                status: response.statusCode || 0,
+                body: Buffer.concat(chunks).toString('utf8'),
+            }));
+        });
+        request.setTimeout(1500, () => request.destroy(new Error('Bridge request timed out')));
+        request.on('error', reject);
+        if (body !== undefined) request.write(body);
+        request.end();
+    });
+}
 
-        try {
-            ws.send(JSON.stringify(message));
-            logToOutput(formatLogMessage('Execute', `Script sent to "${playerName}" (${clientId})`, LogLevel.SUCCESS));
-            successCount++;
-        } catch (error) {
-            logToOutput(formatLogMessage('Execute', `Failed to send script to "${playerName}": ${error}`, LogLevel.ERROR));
-            failureCount++;
+async function probeBridge(): Promise<BridgeHealth | undefined> {
+    try {
+        const response = await requestHttp('GET', '/health');
+        if (response.status < 200 || response.status >= 300) {
+            throw new Error(`Port ${bridgePort()} is occupied by a non-VSExecutor service`);
         }
-    }
-
-    // Show summary message
-    if (failureCount === 0) {
-        vscode.window.showInformationMessage(`Script successfully sent to all ${successCount} clients.`);
-        logToOutput(formatLogMessage('Execute', `✅ Broadcast completed: ${successCount}/${clientCount} clients reached`, LogLevel.SUCCESS));
-    } else {
-        vscode.window.showWarningMessage(`Script sent to ${successCount}/${clientCount} clients. ${failureCount} failed.`);
-        logToOutput(formatLogMessage('Execute', `⚠️ Broadcast completed with errors: ${successCount} succeeded, ${failureCount} failed`, LogLevel.WARNING));
+        const health = JSON.parse(response.body) as BridgeHealth;
+        if (health.Service !== 'VSExecutor') {
+            throw new Error(`Port ${bridgePort()} is occupied by another service`);
+        }
+        return health;
+    } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ECONNREFUSED' || code === 'ENOTFOUND' || String(error).includes('timed out')) return undefined;
+        throw error;
     }
 }
 
-// Function to update button text based on connected clients
+function runCommand(command: string, args: string[]) {
+    return new Promise<string>((resolve, reject) => {
+        execFile(command, args, { windowsHide: true }, (error, stdout) => {
+            if (error) reject(error);
+            else resolve(stdout);
+        });
+    });
+}
+
+async function findListeningBridgePid() {
+    if (process.platform !== 'win32') return undefined;
+    const output = await runCommand('powershell.exe', [
+        '-NoProfile',
+        '-Command',
+        `(Get-NetTCPConnection -LocalPort ${bridgePort()} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess)`,
+    ]);
+    const pid = Number(output.trim());
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+}
+
+async function processCommandLine(pid: number) {
+    if (process.platform !== 'win32') return '';
+    return runCommand('powershell.exe', [
+        '-NoProfile',
+        '-Command',
+        `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CommandLine`,
+    ]);
+}
+
+async function replaceStaleBridge(health: BridgeHealth) {
+    const pid = health.Pid || await findListeningBridgePid();
+    if (!pid || pid === process.pid) {
+        throw new Error('An outdated VSExecutor bridge is running. Close the old bridge and reload VS Code.');
+    }
+    const commandLine = await processCommandLine(pid);
+    if (!/server\.js/i.test(commandLine) || !/vsexecutor/i.test(commandLine)) {
+        throw new Error('The existing bridge is outdated but was not safe to replace automatically.');
+    }
+
+    if (process.platform === 'win32') {
+        await runCommand('taskkill.exe', ['/PID', String(pid), '/T', '/F']);
+    } else {
+        process.kill(pid);
+    }
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+        try {
+            if (!(await probeBridge())) return;
+        } catch (_) {
+            return;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+}
+
+async function ensureBridge(context: vscode.ExtensionContext) {
+    const existing = await probeBridge();
+    if (existing && (existing.MaxScriptBytes || 0) >= MAX_SCRIPT_BYTES) {
+        log('Bridge', `Reusing bridge ${existing.Version}`, 'INFO');
+        return;
+    }
+    if (existing) await replaceStaleBridge(existing);
+
+    const serverPath = path.join(context.extensionPath, 'server.js');
+    const child = spawn(process.execPath, [serverPath, `--port=${bridgePort()}`, '--host=0.0.0.0'], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    });
+    child.unref();
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+        try {
+            const health = await probeBridge();
+            if (health) return;
+        } catch (error) {
+            lastError = error;
+            break;
+        }
+        await new Promise(resolve => setTimeout(resolve, Math.min(100 * (attempt + 1), 500)));
+    }
+    throw lastError || new Error(`VSExecutor bridge did not start on port ${bridgePort()}`);
+}
+
+function visibleLineCount(editor: vscode.TextEditor) {
+    return editor.visibleRanges.reduce((total, range) => total + range.end.line - range.start.line + 1, 0);
+}
+
+function isOutputLikeDocument(editor: vscode.TextEditor) {
+    const language = editor.document.languageId.toLowerCase();
+    if (language === 'log' || language === 'output') return true;
+    const lineCount = Math.min(editor.document.lineCount, 8);
+    for (let index = 0; index < lineCount; index += 1) {
+        const line = editor.document.lineAt(index).text;
+        if (/^\s*\d{1,2}:\d{2}:\d{2}\s+(INFO|SUCCESS|WARNING|ERROR|DEBUG)\s+\[/.test(line)) return true;
+    }
+    return false;
+}
+
+function getMainEditor(): vscode.TextEditor | undefined {
+    const editors = vscode.window.visibleTextEditors.filter(editor => !editor.document.isClosed && !isOutputLikeDocument(editor));
+    if (!editors.length) {
+        return lastMainEditor && !lastMainEditor.document.isClosed && !isOutputLikeDocument(lastMainEditor)
+            ? lastMainEditor
+            : undefined;
+    }
+    const ranked = [...editors].sort((a, b) => {
+        const area = visibleLineCount(b) - visibleLineCount(a);
+        if (area) return area;
+        return (a.viewColumn || Number.MAX_SAFE_INTEGER) - (b.viewColumn || Number.MAX_SAFE_INTEGER);
+    });
+    lastMainEditor = ranked[0];
+    return lastMainEditor;
+}
+
 function updateButtonText() {
-    const clientCount = connectedClients.size;
-    if (clientCount === 0) {
-        executeButton.text = "$(circle-slash) No Clients";
+    if (!executeButton) return;
+    const clients = Array.from(connectedClients.values());
+    if (!clients.length) {
+        executeButton.text = '$(circle-slash) No Clients';
         executeButton.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
-    } else if (clientCount === 1) {
-        const playerName = Array.from(connectedClients.values())[0];
-        executeButton.text = `$(rocket) Execute → ${playerName}`;
+    } else if (clients.length === 1) {
+        const client = clients[0];
+        executeButton.text = `$(rocket) Execute → ${client.gameName}`;
         executeButton.backgroundColor = undefined;
     } else {
-        executeButton.text = `$(rocket) Execute (${clientCount} clients)`;
+        executeButton.text = `$(rocket) Execute (${clients.length} clients)`;
         executeButton.backgroundColor = undefined;
     }
 }
 
-// Function to update button visibility based on active editor language
 function updateButtonVisibility() {
-    const activeEditor = vscode.window.activeTextEditor;
-    
-    if (activeEditor && activeEditor.document.languageId === 'lua') {
+    if (!executeButton) return;
+    if (getMainEditor()) {
         executeButton.show();
-        updateButtonText(); // Update text based on connected clients
-    } else if (activeEditor && activeEditor.document.languageId !== 'Log') {
-        executeButton.show();
-        executeButton.text = "$(circle-slash) Lua Only";
-        executeButton.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+        updateButtonText();
     } else {
         executeButton.hide();
     }
 }
 
-// Function to check if port is in use
-function isPortInUse(port: number): Promise<boolean> {
-    return new Promise((resolve, reject) => {
-        const server = net.createServer();
-        server.once('error', (error: any) => {
-            if (error.code === 'EADDRINUSE') {
-                resolve(true); // Port is in use
-            } else {
-                resolve(false); // Other error, port is available
-            }
-        });
-        server.once('listening', () => {
-            server.close();
-            resolve(false); // Port is available
-        });
-        server.listen(port);
-    });
+async function sendScript(script: string, client?: ClientInfo, broadcast = false) {
+    if (Buffer.byteLength(script, 'utf8') > MAX_SCRIPT_BYTES) {
+        const message = 'Script is larger than the 8 MiB bridge limit.';
+        log('Execute', message, 'ERROR');
+        vscode.window.showErrorMessage(message);
+        return;
+    }
+    if (!sendControl({
+        Type: 'execute_script',
+        Script: script,
+        SessionId: client?.sessionId,
+        ClientId: client?.clientId,
+        Broadcast: broadcast,
+        RequestId: newId(),
+    })) {
+        vscode.window.showErrorMessage('VSExecutor is not connected to the bridge.');
+        return;
+    }
+    if (broadcast) {
+        vscode.window.showInformationMessage('Script queued for connected clients.');
+    } else if (client) {
+        vscode.window.showInformationMessage(`Script queued for ${client.gameName}.`);
+    } else {
+        vscode.window.showInformationMessage('Script queued for the legacy loader.');
+    }
 }
 
-// Function to kill the process using the port
-function killProcessUsingPort(port: number): Promise<void> {
-    return new Promise((resolve, reject) => {
-        if (process.platform === 'win32') {
-            exec(`netstat -ano | findstr :${port}`, (err: any, stdout: any, stderr: any) => {
-                if (err || stderr) {
-                    if (err) {
-                        console.log(`Error finding process using port ${port}: ${stderr || err.message}`);
-                    }
-                    resolve(); // Proceed if no process using port
-                    return;
-                }
-
-                const lines = stdout.split('\n');
-                const pidLine = lines.find((line: any) => line.includes(`:${port}`));
-
-                if (pidLine) {
-                    const pid = pidLine.trim().split(/\s+/).pop(); // Extract PID from the line
-
-                    if (pid) {
-                        exec(`taskkill /PID ${pid} /F`, (killErr: any, killStdout: any, killStderr: any) => {
-                            if (killErr) {
-                                console.log(`Error killing process: ${killErr.message}`);
-                            } else {
-                                console.log(`Killed process using port ${port}`);
-                            }
-                            resolve(); // Continue after killing the process
-                        });
-                    } else {
-                        resolve(); // No PID found, proceed
-                    }
-                } else {
-                    resolve(); // No process found using the port, proceed
-                }
-            });
-        } else {
-            exec(`lsof -t -i:${port}`, (err: any, stdout: any, stderr: any) => {
-                if (err || stderr) {
-                    if (err) {
-                        console.log(`Error finding process using port ${port}: ${stderr || err.message}`);
-                    }
-                    resolve(); // Proceed if no process using port
-                    return;
-                }
-
-                const pid = stdout.trim();
-                if (pid) {
-                    exec(`kill -9 ${pid}`, (killErr: any, killStdout: any, killStderr: any) => {
-                        if (killErr) {
-                            console.log(`Error killing process: ${killErr.message}`);
-                        } else {
-                            console.log(`Killed process using port ${port}`);
-                        }
-                        resolve(); // Continue after killing the process
-                    });
-                } else {
-                    resolve(); // No process found, proceed
-                }
-            });
-        }
-    });
-}
-
-// Function to start the server
-async function startServer() {
-    const port = 1306;
-
-    // Check if port is in use
-    const inUse = await isPortInUse(port);
-    if (inUse) {
-        console.log(`Port ${port} is in use. Attempting to kill the process using it...`);
-        await killProcessUsingPort(port);
+async function executeMainEditor() {
+    const editor = getMainEditor();
+    if (!editor) {
+        vscode.window.showWarningMessage('Open a text editor before executing a script.');
+        return;
+    }
+    const script = editor.document.getText();
+    if (!script.trim()) {
+        vscode.window.showWarningMessage('The main editor is empty.');
+        return;
     }
 
-    // After killing the process (if needed), start the WebSocket server
-    await startWebSocketServer();
-}
-
-// Function to actually start the WebSocket server
-function startWebSocketServer(): Promise<void> {
-    return new Promise((resolve, reject) => {
-        // Get the extension's root path dynamically from the `extensionContext`
-        const extensionRootPath = vscode.extensions.getExtension('egodtheturtle.vsexecutor')?.extensionPath;
-        if (!extensionRootPath) {
-            reject(new Error('Unable to find the extension root path.'));
-            return;
-        }
-
-        // Resolve the path to the server.js file relative to the extension root directory
-        const serverPath = path.join(extensionRootPath, 'server.js');  // Adjust this based on the actual location of server.js
-
-        console.log('Starting server with path:', serverPath); // Debugging the path
-
-        // Spawn the WebSocket server in the background
-        const startServerCommand = spawn(process.execPath, [serverPath]);
-
-        // Capture stdout and stderr to log them
-        startServerCommand.stdout?.on('data', (data: any) => {
-            // console.log(data);
-            // Check for specific logs indicating that the server has started
-            if (data.toString().includes('Server started')) {
-                console.log("Server started")
-                resolve(); // Resolve when the server confirms it's started
-            }
-        });
-
-        startServerCommand.stderr?.on('data', (data: any) => {
-            console.error(`stderr: ${data}`);
-        });
-
-        startServerCommand.on('error', (err: any) => {
-            console.error(`Failed to start server: ${err.message}`);
-            reject(err);
-        });
-
-        startServerCommand.on('close', (code: any) => {
-            console.log(`Server process closed with code ${code}`);
-            // Optionally handle server exit logic here
-        });
-    });
-}
-
-// Log levels for better categorization
-enum LogLevel {
-    INFO = 'INFO',
-    SUCCESS = 'SUCCESS',
-    WARNING = 'WARNING',
-    ERROR = 'ERROR',
-    DEBUG = 'DEBUG',
-    WEBSOCKET = 'WEBSOCKET'
-}
-
-// Utility function to log messages to the output channel with better formatting
-function logToOutput(message: string) {
-    outputChannel.appendLine(message);
-}
-
-// Utility function to format log messages with better visual separation
-function formatLogMessage(tag: string, message: string, level: LogLevel = LogLevel.INFO): string {
-    const now = new Date();
-    const hours = now.getHours().toString();
-    const minutes = now.getMinutes().toString();
-    const seconds = now.getSeconds().toString();
-    const timestamp = `${hours.length === 1 ? '0' + hours : hours}:${minutes.length === 1 ? '0' + minutes : minutes}:${seconds.length === 1 ? '0' + seconds : seconds}`;
-    
-    // Create visual indicators based on log level
-    let indicator: string;
-    let prefix: string;
-    
-    switch (level) {
-        case LogLevel.ERROR:
-            indicator = '❌';
-            prefix = '🚨 ERROR';
-            break;
-        case LogLevel.WARNING:
-            indicator = '⚠️';
-            prefix = '⚠️ WARNING';
-            break;
-        case LogLevel.SUCCESS:
-            indicator = '✅';
-            prefix = '✅ SUCCESS';
-            break;
-        case LogLevel.DEBUG:
-            indicator = '🔍';
-            prefix = '🔍 DEBUG';
-            break;
-        case LogLevel.WEBSOCKET:
-            indicator = '🌐';
-            prefix = '🌐 WEBSOCKET';
-            break;
-        case LogLevel.INFO:
-        default:
-            indicator = 'ℹ️';
-            prefix = 'ℹ️ INFO';
-            break;
+    const clients = Array.from(connectedClients.values());
+    if (clients.length === 0) {
+        await sendScript(script);
+        return;
     }
-    
-    return `${timestamp} ${prefix} [${tag}]: ${message}`;
+    if (clients.length === 1) {
+        await sendScript(script, clients[0]);
+        return;
+    }
+
+    const items: QuickPickClient[] = clients.map(client => ({
+        label: client.gameName,
+        description: `${client.protocol} | Job ID: ${client.jobId} | Player: ${client.playerName}`,
+        detail: `Place ID: ${client.placeId}`,
+        sessionId: client.sessionId,
+    }));
+    items.push({
+        label: `$(broadcast) Execute All (${clients.length} clients)`,
+        description: 'Send to every connected WebSocket and loadstring client',
+        sessionId: 'ALL_CLIENTS',
+        broadcast: true,
+    });
+    const selected = await vscode.window.showQuickPick(items, {
+        title: 'Execute Script',
+        placeHolder: 'Select a Roblox session',
+    });
+    if (!selected) return;
+    await sendScript(script, selected.broadcast ? undefined : connectedClients.get(selected.sessionId), Boolean(selected.broadcast));
 }
 
-// Function to clear output and add a fresh start header
-function clearOutputAndStart(title: string) {
-    outputChannel.clear();
+function ipv4Addresses() {
+    const addresses: Array<{ address: string; name: string }> = [];
+    for (const [name, infos] of Object.entries(os.networkInterfaces())) {
+        for (const info of infos || []) {
+            const family = String(info.family);
+            if ((family === 'IPv4' || family === '4') && !info.internal) {
+                addresses.push({ address: info.address, name });
+            }
+        }
+    }
+    return addresses;
+}
+
+async function copyIPv4() {
+    const addresses = ipv4Addresses();
+    if (!addresses.length) {
+        vscode.window.showWarningMessage('No non-internal IPv4 address was found.');
+        return;
+    }
+    let selected = addresses[0];
+    if (addresses.length > 1) {
+        const pick = await vscode.window.showQuickPick(addresses.map(value => ({
+            label: value.address,
+            description: value.name,
+            value,
+        })), { placeHolder: 'Select an IPv4 address to copy' });
+        if (!pick) return;
+        selected = pick.value;
+    }
+    await vscode.env.clipboard.writeText(selected.address);
+    vscode.window.showInformationMessage(`Copied ${selected.address} (${selected.name}).`);
+}
+
+async function copyAutoexec() {
+    const defaultMode = config().get<LoaderMode>('defaultLoaderMode', 'websocket');
+    const selected = await vscode.window.showQuickPick([
+        { label: 'WebSocket', description: 'Recommended current transport', mode: 'websocket' as LoaderMode },
+        { label: 'Loadstring / HTTP', description: 'Legacy v0.0.2-compatible polling transport', mode: 'loadstring' as LoaderMode },
+    ], {
+        placeHolder: `Select loader mode (default: ${defaultMode})`,
+    });
+    if (!selected) return;
+
+    await config().update('defaultLoaderMode', selected.mode, vscode.ConfigurationTarget.Global);
+    const snippet = [
+        'local Params = {',
+        '    RepoURL = "https://raw.githubusercontent.com/egoDtheTurtle/vsexecutor/main/",',
+        '    SSI = "src/vsexecutor",',
+        '}',
+        '',
+        'loadstring(game:HttpGet(Params.RepoURL .. Params.SSI .. ".lua", true), Params.SSI)()({',
+        '    ["Log Game Output"] = false,',
+        '    ["Ethernet IPv4"] = "",',
+        `    ["Loader Mode"] = "${selected.mode}",`,
+        '})',
+    ].join('\n');
+    await vscode.env.clipboard.writeText(snippet);
+    vscode.window.showInformationMessage(`Copied ${selected.label} autoexec loader.`);
+}
+
+async function refreshClients() {
+    sendControl({ Type: 'get_client_list' });
+    try {
+        const response = await requestHttp('GET', '/clients');
+        if (response.status >= 200 && response.status < 300) applyClientList(JSON.parse(response.body));
+    } catch (error) {
+        log('Bridge', `Client refresh failed: ${String(error)}`, 'WARNING');
+    }
+}
+
+export async function activate(context: vscode.ExtensionContext) {
+    shuttingDown = false;
+    outputChannel = vscode.window.createOutputChannel('VSExecutor', 'log');
+    outputView = new OutputView(context);
+    outputChannel.show(true);
+
+    try {
+        await ensureBridge(context);
+    } catch (error) {
+        log('Bridge', String(error), 'ERROR');
+        vscode.window.showErrorMessage(`VSExecutor bridge unavailable: ${String(error)}`);
+    }
+
+    executeButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
+    executeButton.command = 'extension.executeFile';
+    executeButton.tooltip = 'Execute the main visible text editor';
+    updateButtonVisibility();
+
+    context.subscriptions.push(
+        executeButton,
+        outputView,
+        vscode.window.onDidChangeActiveTextEditor(updateButtonVisibility),
+        vscode.window.onDidChangeVisibleTextEditors(updateButtonVisibility),
+        vscode.commands.registerCommand('extension.executeFile', executeMainEditor),
+        vscode.commands.registerCommand('extension.copyIPv4', copyIPv4),
+        vscode.commands.registerCommand('extension.copyAutoexec', copyAutoexec),
+        vscode.commands.registerCommand('extension.refreshClients', refreshClients),
+        vscode.commands.registerCommand('extension.openOutputViewer', () => outputView.show()),
+        new vscode.Disposable(() => {
+            if (reconnectTimer) clearTimeout(reconnectTimer);
+            ws?.close();
+        }),
+    );
+
+    connectControl();
 }
 
 export function deactivate() {
-    if (ws) {
-        ws.close();
-    }
+    shuttingDown = true;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
+    ws?.close();
+    ws = undefined;
+    outputView?.dispose();
 }
