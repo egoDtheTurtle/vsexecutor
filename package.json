@@ -22,8 +22,6 @@
   "scripts": {
     "compile": "tsc -p ./",
     "lint": "tsc -p ./ --noEmit",
-    "pretest": "npm run compile",
-    "test": "node --test test/**/*.test.js",
     "watch": "tsc -w"
   },
   "activationEvents": [

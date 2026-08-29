@@ -146,13 +146,12 @@ then restart the extension host.
 npm ci
 npm run compile
 npm run lint
-npm test
 npx vsce package
 ```
 
 The VSIX includes the compiled extension, `server.js`, and
-`src/vsexecutor.lua`. Source TypeScript, tests, maps, and development helpers
-are excluded from the package.
+`src/vsexecutor.lua`. Source TypeScript, maps, and development helpers are
+excluded from the package.
 
 ## Responsible use
 

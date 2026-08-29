@@ -1,5 +1,4 @@
 .vscode/**
-test/**
 src/extension.ts
 src/output-view.ts
 **/*.map
@@ -7,7 +6,6 @@ src/output-view.ts
 node_modules/**
 !node_modules/ws/**
 *.vsix
-PLAN.md
 package-lock.json
 tsconfig.json
 .gitignore
