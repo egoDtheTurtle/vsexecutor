@@ -52,6 +52,7 @@ let lastMainEditor: vscode.TextEditor | undefined;
 let reconnectTimer: NodeJS.Timeout | undefined;
 let reconnectDelay = 500;
 let shuttingDown = false;
+let connecting = false;
 const connectedClients = new Map<string, ClientInfo>();
 
 function config() {
@@ -59,7 +60,8 @@ function config() {
 }
 
 function bridgeHost() {
-    return config().get<string>('host', 'localhost');
+    const host = config().get<string>('host', 'localhost');
+    return host.toLowerCase() === 'localhost' ? '127.0.0.1' : host;
 }
 
 function bridgePort() {
@@ -229,18 +231,42 @@ function sendControl(message: Record<string, unknown>) {
     }
 }
 
-function scheduleReconnect() {
+function connectionErrors(error: unknown): NodeJS.ErrnoException[] {
+    const nested = (error as { errors?: unknown[] } | null)?.errors;
+    return Array.isArray(nested) && nested.length
+        ? nested.reduce<NodeJS.ErrnoException[]>((all, item) => all.concat(connectionErrors(item)), [])
+        : [error as NodeJS.ErrnoException];
+}
+
+function describeError(error: unknown) {
+    return connectionErrors(error).map(item => item?.message || String(item)).join('; ');
+}
+
+function scheduleReconnect(context: vscode.ExtensionContext) {
     if (shuttingDown || reconnectTimer) return;
     reconnectTimer = setTimeout(() => {
         reconnectTimer = undefined;
-        connectControl();
+        void connectControl(context);
     }, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 10_000);
 }
 
-function connectControl() {
-    if (shuttingDown || (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING))) return;
-    const socket = new WebSocket(`ws://${bridgeHost()}:${bridgePort()}`);
+async function connectControl(context: vscode.ExtensionContext) {
+    if (shuttingDown || connecting || (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING))) return;
+    connecting = true;
+    try {
+        await ensureBridge(context);
+    } catch (error) {
+        if (!shuttingDown) {
+            log('Bridge', describeError(error), 'ERROR');
+            scheduleReconnect(context);
+        }
+        return;
+    } finally {
+        connecting = false;
+    }
+    if (shuttingDown) return;
+    const socket = new WebSocket(`ws://${bridgeHost()}:${bridgePort()}`, { handshakeTimeout: 5000 });
     ws = socket;
     socket.on('open', () => {
         reconnectDelay = 500;
@@ -249,14 +275,14 @@ function connectControl() {
         sendControl({ Type: 'get_client_list' });
     });
     socket.on('message', data => handleBridgeMessage(data));
-    socket.on('error', error => log('WebSocket', String(error), 'ERROR'));
+    socket.on('error', error => log('WebSocket', describeError(error), 'ERROR'));
     socket.on('close', () => {
         if (ws !== socket) return;
         ws = undefined;
         connectedClients.clear();
         updateButtonText();
         log('WebSocket', 'Control connection closed', 'WARNING');
-        scheduleReconnect();
+        scheduleReconnect(context);
     });
 }
 
@@ -298,8 +324,9 @@ async function probeBridge(): Promise<BridgeHealth | undefined> {
         }
         return health;
     } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code === 'ECONNREFUSED' || code === 'ENOTFOUND' || String(error).includes('timed out')) return undefined;
+        if (connectionErrors(error).every(item => item?.code === 'ECONNREFUSED'
+            || item?.code === 'ENOTFOUND' || item?.code === 'ETIMEDOUT'
+            || String(item).includes('timed out'))) return undefined;
         throw error;
     }
 }
@@ -367,16 +394,19 @@ async function ensureBridge(context: vscode.ExtensionContext) {
     if (existing) await replaceStaleBridge(existing);
 
     const serverPath = path.join(context.extensionPath, 'server.js');
+    let lastError: unknown;
     const child = spawn(process.execPath, [serverPath, `--port=${bridgePort()}`, '--host=0.0.0.0'], {
         detached: true,
         stdio: 'ignore',
         windowsHide: true,
         env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     });
+    child.on('error', error => { lastError = error; });
     child.unref();
 
-    let lastError: unknown;
     for (let attempt = 0; attempt < 12; attempt += 1) {
+        if (shuttingDown) return;
+        if (lastError) break;
         try {
             const health = await probeBridge();
             if (health) return;
@@ -591,13 +621,6 @@ export async function activate(context: vscode.ExtensionContext) {
     outputView = new OutputView(context);
     outputChannel.show(true);
 
-    try {
-        await ensureBridge(context);
-    } catch (error) {
-        log('Bridge', String(error), 'ERROR');
-        vscode.window.showErrorMessage(`VSExecutor bridge unavailable: ${String(error)}`);
-    }
-
     executeButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
     executeButton.command = 'extension.executeFile';
     executeButton.tooltip = 'Execute the main visible text editor';
@@ -619,7 +642,7 @@ export async function activate(context: vscode.ExtensionContext) {
         }),
     );
 
-    connectControl();
+    await connectControl(context);
 }
 
 export function deactivate() {
